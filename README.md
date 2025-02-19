@@ -1,2 +1,2 @@
 # learngit2
-so who can compensate for the nutrition that I was short of?
+该代码考虑了在使用CPU的情况下的多种运算提速方法，包括在 DataLoader 中增加了 num_workers=4 参数，使用 4 个线程并行加载数据，提高数据加载速度，以及减少数据类型转换等手段加快CPU运算速度。同时，对于ResNet32中不同残差块残差层数量的分配也按照经验（初级层与高级层减少，中级层增加）的方式进行了调整，在缺乏GPU的情况下尽可能实现了效率的最高化

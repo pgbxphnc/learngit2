@@ -1,0 +1,187 @@
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torchvision import datasets, transforms
+from torch.utils.data import DataLoader
+import time
+
+# 数据预处理部分
+transform = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)) # 对图像进行归一化处理，将像素值缩放到 [-1, 1] 范围
+])
+
+
+# 定义 LeNet 模型，继承自 nn.Module
+class LeNet(nn.Module):
+    def __init__(self):
+        super(LeNet, self).__init__()
+        self.conv1 = nn.Conv2d(3, 6, kernel_size=5)
+        self.pool = nn.MaxPool2d(2, 2) # 最大汇聚（池化）层，池化窗口大小为 2x2，步长为 2
+        self.conv2 = nn.Conv2d(6, 16, kernel_size=5)
+        self.fc1 = nn.Linear(16 * 5 * 5, 120)
+        self.fc2 = nn.Linear(120, 84)
+        self.fc3 = nn.Linear(84, 10) # 第三个全连接层，输入特征数为 84，输出特征数为 10（对应 10 个类别）
+
+    def forward(self, x):
+        x = self.pool(torch.relu(self.conv1(x))) # 先通过第一个卷积层，然后使用 ReLU 激活函数，最后进行最大池化操作
+        x = self.pool(torch.relu(self.conv2(x))) # 同理，对第二个卷积层的输出进行处理
+        x = x.view(-1, 16 * 5 * 5) # 将多维的特征图展平为一维向量，以便输入到全连接层
+        x = torch.relu(self.fc1(x))
+        x = torch.relu(self.fc2(x))
+        x = self.fc3(x)
+        return x
+
+
+class BasicBlock(nn.Module): # 定义 ResNet34 模型中的基本残差块，继承自 nn.Module
+    expansion = 1
+
+    def __init__(self, in_channels, out_channels, stride=1):
+        super(BasicBlock, self).__init__()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+
+        # 定义捷径连接，初始为空
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_channels != self.expansion * out_channels: # 如果步长不为 1（引起图形大小变化） 或者输入通道数不等于输出通道数乘以扩展因子，则需要对捷径连接进行调整，使用 1x1 卷积和批量归一化
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_channels, self.expansion * out_channels, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(self.expansion * out_channels)
+            )
+
+    def forward(self, x):
+        out = torch.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out += self.shortcut(x)
+        out = torch.relu(out)
+        return out
+
+
+
+class ResNet34(nn.Module): # 定义 ResNet34 模型
+    def __init__(self, num_classes=10):
+        super(ResNet34, self).__init__()
+        self.in_channels = 64
+        self.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)        # 第一个卷积层，输入通道数为 3，输出通道数为 64，卷积核大小为 3x3，步长为 1，填充为 1，不使用偏置项
+        self.bn1 = nn.BatchNorm2d(64)
+        self.layer1 = self._make_layer(64, 3, stride=1) # 第一个残差层，包含 3 个基本残差块，步长为 1
+        self.layer2 = self._make_layer(128, 4, stride=2) # 第二个残差层，包含 4 个基本残差块，步长为 2
+        self.layer3 = self._make_layer(256, 6, stride=2) # 第三个残差层，包含 6 个基本残差块，步长为 2
+        self.layer4 = self._make_layer(512, 3, stride=2) # 第四个残差层，包含 3 个基本残差块，步长为 2
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1)) # 自适应平均池化层，将特征图的大小调整为 1x1
+        self.fc = nn.Linear(512 * BasicBlock.expansion, num_classes) # 全连接层，输入特征数为 512 * 扩展因子（这里为 1），输出特征数为 num_classes（即 10）
+
+    def _make_layer(self, out_channels, num_blocks, stride):
+        strides = [stride] + [1] * (num_blocks - 1) # 定义每个残差层中每个块的步长列表，第一个块的步长为 stride，其余块的步长为 1
+        layers = []
+        for stride in strides:
+            layers.append(BasicBlock(self.in_channels, out_channels, stride))
+            self.in_channels = out_channels * BasicBlock.expansion # 更新输入通道数为当前输出通道数乘以扩展因子
+        return nn.Sequential(*layers) # 将列表中的模块组合成一个顺序模块
+
+    def forward(self, x):
+        out = torch.relu(self.bn1(self.conv1(x)))
+        out = self.layer1(out)
+        out = self.layer2(out)
+        out = self.layer3(out)
+        out = self.layer4(out)
+        out = self.avgpool(out)
+        out = out.view(out.size(0), -1)
+        out = self.fc(out)
+        return out
+
+
+def train(model, train_loader, criterion, optimizer, epochs):
+    model.train()
+    for epoch in range(epochs):
+        running_loss = 0.0
+        for i, (images, labels) in enumerate(train_loader):
+            optimizer.zero_grad()
+            outputs = model(images)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+            running_loss += loss.item()
+        print(f'Epoch {epoch + 1}, Loss: {running_loss / len(train_loader)}') # 打印每个 epoch 的平均损失
+
+
+def test(model, test_loader):
+    model.eval() # 将模型设置为评估模式，关闭一些在训练时使用的特殊层（如 Dropout、BatchNorm 等）
+    correct = 0
+    total = 0
+    with torch.no_grad(): # 不计算梯度，减少内存消耗和计算量
+        for images, labels in test_loader:
+            outputs = model(images)
+            _, predicted = torch.max(outputs.data, 1)
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item() # 累加预测正确的样本数
+    print(f'Accuracy: {100 * correct / total}%') # 打印准确率
+
+
+if __name__ == '__main__':
+    train_data = datasets.CIFAR10(root="D:\\train", train=True, download=True, transform=transform)
+    test_data = datasets.CIFAR10(root="D:\\test", train=False, download=True, transform=transform)
+
+    # 使用多线程并行加载训练数据，batch_size 为每个批次的样本数，
+    # shuffle=True 表示每个 epoch 打乱数据顺序，num_workers=4 表示使用 4 个线程加载数据
+    train_loader_multi = DataLoader(train_data, batch_size=64, shuffle=True, num_workers=4)
+    # 使用多线程并行加载测试数据
+    test_loader_multi = DataLoader(test_data, batch_size=64, shuffle=False, num_workers=4)
+
+    # 不使用多线程并行加载训练数据，num_workers=0 表示不使用额外线程
+    train_loader_single = DataLoader(train_data, batch_size=64, shuffle=True, num_workers=0)
+    # 不使用多线程并行加载测试数据
+    test_loader_single = DataLoader(test_data, batch_size=64, shuffle=False, num_workers=0)
+
+    lenet = LeNet()
+    criterion = nn.CrossEntropyLoss() # 定义交叉熵损失函数，用于多分类问题
+    optimizer = optim.SGD(lenet.parameters(), lr=0.001, momentum=0.9) # 定义随机梯度下降优化器，设置学习率为 0.001，动量为 0.9
+    print("Training LeNet with multi-threading...")
+    start_time_multi_lenet = time.time()
+    train(lenet, train_loader_multi, criterion, optimizer, epochs=8)
+    print("Testing LeNet with multi-threading...")
+    test(lenet, test_loader_multi)
+    end_time_multi_lenet = time.time()
+    time_multi_lenet = end_time_multi_lenet - start_time_multi_lenet # 计算训练和测试总共花费的时间
+    print(f"Time taken for LeNet with multi-threading: {time_multi_lenet} seconds")
+
+
+    lenet = LeNet()
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.SGD(lenet.parameters(), lr=0.001, momentum=0.9)
+    print("Training LeNet without multi-threading...")
+    start_time_single_lenet = time.time()
+    train(lenet, train_loader_single, criterion, optimizer, epochs=8)
+    print("Testing LeNet without multi-threading...")
+    test(lenet, test_loader_single)
+    end_time_single_lenet = time.time()
+    time_single_lenet = end_time_single_lenet - start_time_single_lenet # 计算训练和测试总共花费的时间
+    print(f"Time taken for LeNet without multi-threading: {time_single_lenet} seconds")
+
+
+    resnet34 = ResNet34()
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.SGD(resnet34.parameters(), lr=0.001, momentum=0.9)
+    print("Training ResNet34 with multi-threading...")
+    start_time_multi_resnet = time.time()
+    train(resnet34, train_loader_multi, criterion, optimizer, epochs=8)
+    print("Testing ResNet34 with multi-threading...")
+    test(resnet34, test_loader_multi)
+    end_time_multi_resnet = time.time()
+    time_multi_resnet = end_time_multi_resnet - start_time_multi_resnet # 计算训练和测试总共花费的时间
+    print(f"Time taken for ResNet34 with multi-threading: {time_multi_resnet} seconds")
+
+
+    resnet34 = ResNet34()
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.SGD(resnet34.parameters(), lr=0.001, momentum=0.9)
+    print("Training ResNet34 without multi-threading...")
+    start_time_single_resnet = time.time()
+    train(resnet34, train_loader_single, criterion, optimizer, epochs=8)
+    print("Testing ResNet34 without multi-threading...")
+    test(resnet34, test_loader_single)
+    end_time_single_resnet = time.time()
+    time_single_resnet = end_time_single_resnet - start_time_single_resnet # 计算训练和测试总共花费的时间
+    print(f"Time taken for ResNet34 without multi-threading: {time_single_resnet} seconds")
